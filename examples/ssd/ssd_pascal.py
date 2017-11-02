@@ -440,11 +440,14 @@ net.data, net.label = CreateAnnotatedDataLayer(train_data, batch_size=batch_size
         train=True, output_label=True, label_map_file=label_map_file,
         transform_param=train_transform_param, batch_sampler=batch_sampler)
 
+#vgg body
 VGGNetBody(net, from_layer='data', fully_conv=True, reduced=True, dilated=True,
     dropout=False)
 
+#another convolution layer after vgg body
 AddExtraLayers(net, use_batchnorm, lr_mult=lr_mult)
 
+#loc，class的分类器
 mbox_layers = CreateMultiBoxHead(net, data_layer='data', from_layers=mbox_source_layers,
         use_batchnorm=use_batchnorm, min_sizes=min_sizes, max_sizes=max_sizes,
         aspect_ratios=aspect_ratios, steps=steps, normalizations=normalizations,

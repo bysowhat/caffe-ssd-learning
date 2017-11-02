@@ -801,10 +801,11 @@ def CreateMultiBoxHead(net, data_layer="data", num_classes=[], from_layers=[],
         aspect_ratios=[], steps=[], img_height=0, img_width=0, share_location=True,
         flip=True, clip=True, offset=0.5, inter_layer_depth=[], kernel_size=1, pad=0,
         conf_postfix='', loc_postfix='', **bn_param):
-    assert num_classes, "must provide num_classes"
+    assert num_classes, "must provide num_classes"#21
     assert num_classes > 0, "num_classes must be positive number"
-    if normalizations:
+    if normalizations:#[20,-1,-1,-1,-1,-1]
         assert len(from_layers) == len(normalizations), "from_layers and normalizations should have same length"
+    #bounding box 大小等参数
     assert len(from_layers) == len(min_sizes), "from_layers and min_sizes should have same length"
     if max_sizes:
         assert len(from_layers) == len(max_sizes), "from_layers and max_sizes should have same length"
@@ -822,11 +823,11 @@ def CreateMultiBoxHead(net, data_layer="data", num_classes=[], from_layers=[],
     loc_layers = []
     conf_layers = []
     objectness_layers = []
-    for i in range(0, num):
+    for i in range(0, num):#6层
         from_layer = from_layers[i]
 
         # Get the normalize value.
-        if normalizations:
+        if normalizations:#/20
             if normalizations[i] != -1:
                 norm_name = "{}_norm".format(from_layer)
                 net[norm_name] = L.Normalize(net[from_layer], scale_filler=dict(type="constant", value=normalizations[i]),
@@ -842,47 +843,48 @@ def CreateMultiBoxHead(net, data_layer="data", num_classes=[], from_layers=[],
                 from_layer = inter_name
 
         # Estimate number of priors per location given provided parameters.
-        min_size = min_sizes[i]
+        min_size = min_sizes[i]#[30.0,60.0,111.0,162.0,213.0,264.0]
         if type(min_size) is not list:
             min_size = [min_size]
         aspect_ratio = []
-        if len(aspect_ratios) > i:
-            aspect_ratio = aspect_ratios[i]
+        if len(aspect_ratios) > i:#[[2], [2, 3], [2, 3], [2, 3], [2], [2]]
+            aspect_ratio = aspect_ratios[i]#[2]
             if type(aspect_ratio) is not list:
                 aspect_ratio = [aspect_ratio]
         max_size = []
-        if len(max_sizes) > i:
+        if len(max_sizes) > i:#[60.0,111.0,162.0,213.0,264.0,315.0]
             max_size = max_sizes[i]
             if type(max_size) is not list:
                 max_size = [max_size]
             if max_size:
                 assert len(max_size) == len(min_size), "max_size and min_size should have same length."
         if max_size:
-            num_priors_per_location = (2 + len(aspect_ratio)) * len(min_size)
+            num_priors_per_location = (2 + len(aspect_ratio)) * len(min_size)#By default, a box of aspect ratio 1 and min_size and a box of aspect   *   ratio 1 and sqrt(min_size * max_size) are created.
         else:
             num_priors_per_location = (1 + len(aspect_ratio)) * len(min_size)
         if flip:
-            num_priors_per_location += len(aspect_ratio) * len(min_size)
+            num_priors_per_location += len(aspect_ratio) * len(min_size)#2×1 flip成1*2
         step = []
-        if len(steps) > i:
+        if len(steps) > i:#[8, 16, 32, 64, 100, 300]
             step = steps[i]
 
         # Create location prediction layer.
         name = "{}_mbox_loc{}".format(from_layer, loc_postfix)
-        num_loc_output = num_priors_per_location * 4;
+        num_loc_output = num_priors_per_location * 4;#4个坐标
         if not share_location:
             num_loc_output *= num_classes
+        #from_layer上做3*3的卷积,预测loc
         ConvBNLayer(net, from_layer, name, use_bn=use_batchnorm, use_relu=False, lr_mult=lr_mult,
             num_output=num_loc_output, kernel_size=kernel_size, pad=pad, stride=1, **bn_param)
         permute_name = "{}_perm".format(name)
-        net[permute_name] = L.Permute(net[name], order=[0, 2, 3, 1])
+        net[permute_name] = L.Permute(net[name], order=[0, 2, 3, 1])#把channel放到最后一层
         flatten_name = "{}_flat".format(name)
-        net[flatten_name] = L.Flatten(net[permute_name], axis=1)
+        net[flatten_name] = L.Flatten(net[permute_name], axis=1)#4维变成1维
         loc_layers.append(net[flatten_name])
 
         # Create confidence prediction layer.
         name = "{}_mbox_conf{}".format(from_layer, conf_postfix)
-        num_conf_output = num_priors_per_location * num_classes;
+        num_conf_output = num_priors_per_location * num_classes;#分类器的个数
         ConvBNLayer(net, from_layer, name, use_bn=use_batchnorm, use_relu=False, lr_mult=lr_mult,
             num_output=num_conf_output, kernel_size=kernel_size, pad=pad, stride=1, **bn_param)
         permute_name = "{}_perm".format(name)
@@ -892,8 +894,9 @@ def CreateMultiBoxHead(net, data_layer="data", num_classes=[], from_layers=[],
         conf_layers.append(net[flatten_name])
 
         # Create prior generation layer.
+        #生成bbox
         name = "{}_mbox_priorbox".format(from_layer)
-        net[name] = L.PriorBox(net[from_layer], net[data_layer], min_size=min_size,
+        net[name] = L.PriorBox(net[from_layer], net[data_layer], min_size=min_size,#see prior_box_layer.cpp
                 clip=clip, variance=prior_variance, offset=offset)
         if max_size:
             net.update(name, {'max_size': max_size})
@@ -920,6 +923,7 @@ def CreateMultiBoxHead(net, data_layer="data", num_classes=[], from_layers=[],
             net[flatten_name] = L.Flatten(net[permute_name], axis=1)
             objectness_layers.append(net[flatten_name])
 
+    #将6层的结果concat
     # Concatenate priorbox, loc, and conf layers.
     mbox_layers = []
     name = "mbox_loc"

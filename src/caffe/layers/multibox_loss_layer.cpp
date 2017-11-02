@@ -13,17 +13,17 @@ void MultiBoxLossLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top) {
   LossLayer<Dtype>::LayerSetUp(bottom, top);
   if (this->layer_param_.propagate_down_size() == 0) {
-    this->layer_param_.add_propagate_down(true);
-    this->layer_param_.add_propagate_down(true);
-    this->layer_param_.add_propagate_down(false);
-    this->layer_param_.add_propagate_down(false);
+    this->layer_param_.add_propagate_down(true);//location prediction
+    this->layer_param_.add_propagate_down(true);//confidence prediction
+    this->layer_param_.add_propagate_down(false);//prior, ground truth中的坐标值
+    this->layer_param_.add_propagate_down(false);//ground truth, ground ruth中的分类值
   }
   const MultiBoxLossParameter& multibox_loss_param =
       this->layer_param_.multibox_loss_param();
   multibox_loss_param_ = this->layer_param_.multibox_loss_param();
 
-  num_ = bottom[0]->num();
-  num_priors_ = bottom[2]->height() / 4;
+  num_ = bottom[0]->num();//这个是batchsize
+  num_priors_ = bottom[2]->height() / 4;//这个是先验的个数，每个先验包含左上角和右下角的点坐标。
   // Get other parameters.
   CHECK(multibox_loss_param.has_num_classes()) << "Must provide num_classes.";
   num_classes_ = multibox_loss_param.num_classes();
@@ -32,7 +32,7 @@ void MultiBoxLossLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   loc_classes_ = share_location_ ? 1 : num_classes_;
   background_label_id_ = multibox_loss_param.background_label_id();
   use_difficult_gt_ = multibox_loss_param.use_difficult_gt();
-  mining_type_ = multibox_loss_param.mining_type();
+  mining_type_ = multibox_loss_param.mining_type();//减少副样本个数的策略(neg_mining)
   if (multibox_loss_param.has_do_neg_mining()) {
     LOG(WARNING) << "do_neg_mining is deprecated, use mining_type instead.";
     do_neg_mining_ = multibox_loss_param.do_neg_mining();
@@ -58,16 +58,17 @@ void MultiBoxLossLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   vector<int> loss_shape(1, 1);
   // Set up localization loss layer.
   loc_weight_ = multibox_loss_param.loc_weight();
-  loc_loss_type_ = multibox_loss_param.loc_loss_type();
+  loc_loss_type_ = multibox_loss_param.loc_loss_type();//L2 or smooth L1
   // fake shape.
   vector<int> loc_shape(1, 1);
   loc_shape.push_back(4);
-  loc_pred_.Reshape(loc_shape);
+  loc_pred_.Reshape(loc_shape);//(1,4)
   loc_gt_.Reshape(loc_shape);
-  loc_bottom_vec_.push_back(&loc_pred_);
-  loc_bottom_vec_.push_back(&loc_gt_);
-  loc_loss_.Reshape(loss_shape);
+  loc_bottom_vec_.push_back(&loc_pred_);//存放前面的指针
+  loc_bottom_vec_.push_back(&loc_gt_);//存放前面的指针
+  loc_loss_.Reshape(loss_shape);//location的loss
   loc_top_vec_.push_back(&loc_loss_);
+  //新建一个层，实现对locationloss的计算。
   if (loc_loss_type_ == MultiBoxLossParameter_LocLossType_L2) {
     LayerParameter layer_param;
     layer_param.set_name(this->layer_param_.name() + "_l2_loc");
@@ -85,6 +86,8 @@ void MultiBoxLossLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   } else {
     LOG(FATAL) << "Unknown localization loss type.";
   }
+
+  //新建一个层，实现的是对confidence loss的计算。
   // Set up confidence loss layer.
   conf_loss_type_ = multibox_loss_param.conf_loss_type();
   conf_bottom_vec_.push_back(&conf_pred_);
@@ -142,6 +145,8 @@ void MultiBoxLossLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
       << "Number of priors must match number of confidence predictions.";
 }
 
+//预测loction bottom[0] dimension is [N*C*1*1],confidence bottom[1] dimension is [N*C*1*1]
+//priors bottom[2] dimension is [N*1*2*W], gound truth bottom[3] dimension is [N*1*H*8]
 template <typename Dtype>
 void MultiBoxLossLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     const vector<Blob<Dtype>*>& top) {
@@ -151,8 +156,20 @@ void MultiBoxLossLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
   const Dtype* gt_data = bottom[3]->cpu_data();
 
   // Retrieve all ground truth.
+  /*
+	  message NormalizedBBox {
+	  optional float xmin = 1;
+	  optional float ymin = 2;
+	  optional float xmax = 3;
+	  optional float ymax = 4;
+	  optional int32 label = 5;
+	  optional bool difficult = 6;
+	  optional float score = 7;
+	  optional float size = 8;
+	}
+  */
   map<int, vector<NormalizedBBox> > all_gt_bboxes;
-  GetGroundTruth(gt_data, num_gt_, background_label_id_, use_difficult_gt_,
+  GetGroundTruth(gt_data, num_gt_, background_label_id_, use_difficult_gt_,//src/caffe/util/bbox_util.cpp
                  &all_gt_bboxes);
 
   // Retrieve all prior bboxes. It is same within a batch since we assume all
@@ -168,17 +185,18 @@ void MultiBoxLossLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
 
   // Find matches between source bboxes and ground truth bboxes.
   vector<map<int, vector<float> > > all_match_overlaps;
-  FindMatches(all_loc_preds, all_gt_bboxes, prior_bboxes, prior_variances,
+  FindMatches(all_loc_preds, all_gt_bboxes, prior_bboxes, prior_variances,//我们已经在图上画出了prior box，同时也有了ground truth，那么下一步就是将prior box匹配到ground truth上，这是在 src/caffe/utlis/bbox_util.cpp 的 FindMatches 函数里完成的。
               multibox_loss_param_, &all_match_overlaps, &all_match_indices_);
 
   num_matches_ = 0;
   int num_negs = 0;
   // Sample hard negative (and positive) examples based on mining type.
-  MineHardExamples(*bottom[1], all_loc_preds, all_gt_bboxes, prior_bboxes,
+  MineHardExamples(*bottom[1], all_loc_preds, all_gt_bboxes, prior_bboxes,//hard example mining
                    prior_variances, all_match_overlaps, multibox_loss_param_,
                    &num_matches_, &num_negs, &all_match_indices_,
                    &all_neg_indices_);
 
+  //因为我们对prior box是有选择的，所以数据的形状在这里已经被打乱了，没办法直接在后面连接一个loss（Caffe等框架需要每一层的输入是四维张量），所以需要我们把选出来的数据重新整理一下，
   if (num_matches_ >= 1) {
     // Form data to pass on to loc_loss_layer_.
     vector<int> loc_shape(2);
@@ -238,6 +256,7 @@ void MultiBoxLossLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     conf_loss_.mutable_cpu_data()[0] = 0;
   }
 
+  //输出loc+分类loss
   top[0]->mutable_cpu_data()[0] = 0;
   if (this->layer_param_.propagate_down(0)) {
     Dtype normalizer = LossLayer<Dtype>::GetNormalizer(

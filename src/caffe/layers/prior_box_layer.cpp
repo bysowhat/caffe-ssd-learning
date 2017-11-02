@@ -7,11 +7,13 @@
 
 namespace caffe {
 
+//LayerSetUp 用来根据穿进来的参数设置这个类自己的参数
 template <typename Dtype>
 void PriorBoxLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top) {
   const PriorBoxParameter& prior_box_param =
       this->layer_param_.prior_box_param();
+  //将传递进来的 prior_box_param.min_size_参数存入这个类自己的变量min_sizes_
   CHECK_GT(prior_box_param.min_size_size(), 0) << "must provide min_size.";
   for (int i = 0; i < prior_box_param.min_size_size(); ++i) {
     min_sizes_.push_back(prior_box_param.min_size(i));
@@ -20,9 +22,11 @@ void PriorBoxLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   aspect_ratios_.clear();
   aspect_ratios_.push_back(1.);
   flip_ = prior_box_param.flip();
+  // 循环aspect_ratio:[[2], [2, 3], [2, 3], [2, 3], [2], [2]]W
   for (int i = 0; i < prior_box_param.aspect_ratio_size(); ++i) {
     float ar = prior_box_param.aspect_ratio(i);
     bool already_exist = false;
+    //循环aspect_ratios_ 初始只有1.0
     for (int j = 0; j < aspect_ratios_.size(); ++j) {
       if (fabs(ar - aspect_ratios_[j]) < 1e-6) {
         already_exist = true;
@@ -30,13 +34,14 @@ void PriorBoxLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       }
     }
     if (!already_exist) {
-      aspect_ratios_.push_back(ar);
+      aspect_ratios_.push_back(ar);//加入2
       if (flip_) {
-        aspect_ratios_.push_back(1./ar);
+        aspect_ratios_.push_back(1./ar);//加入1/2
       }
     }
   }
   num_priors_ = aspect_ratios_.size() * min_sizes_.size();
+//如果设了maxsize，则增加一个prioir
   if (prior_box_param.max_size_size() > 0) {
     CHECK_EQ(prior_box_param.min_size_size(), prior_box_param.max_size_size());
     for (int i = 0; i < prior_box_param.max_size_size(); ++i) {
@@ -46,6 +51,8 @@ void PriorBoxLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       num_priors_ += 1;
     }
   }
+
+  //variance_ 就是w,h,x,y分别除以tensorflow ssd中的prior_scaling [0.1,0.1,0.2,0.2]
   clip_ = prior_box_param.clip();
   if (prior_box_param.variance_size() > 1) {
     // Must and only provide 4 variance.
@@ -62,6 +69,7 @@ void PriorBoxLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     variance_.push_back(0.1);
   }
 
+  //通过参数，设定这个类自己的变量img_h_,img_w_
   if (prior_box_param.has_img_h() || prior_box_param.has_img_w()) {
     CHECK(!prior_box_param.has_img_size())
         << "Either img_size or img_h/img_w should be specified; not both.";
@@ -79,6 +87,7 @@ void PriorBoxLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     img_w_ = 0;
   }
 
+  //step_h_,step_w_feature map上每个点对应图像的像素距离
   if (prior_box_param.has_step_h() || prior_box_param.has_step_w()) {
     CHECK(!prior_box_param.has_step())
         << "Either step or step_h/step_w should be specified; not both.";
@@ -99,18 +108,19 @@ void PriorBoxLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   offset_ = prior_box_param.offset();
 }
 
+//reshape function
 template <typename Dtype>
 void PriorBoxLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top) {
-  const int layer_width = bottom[0]->width();
-  const int layer_height = bottom[0]->height();
-  vector<int> top_shape(3, 1);
+  const int layer_width = bottom[0]->width();//上一层feature map的宽
+  const int layer_height = bottom[0]->height();//上一层feature map的高
+  vector<int> top_shape(3, 1);//初始含有3个初始值为1的元素
   // Since all images in a batch has same height and width, we only need to
   // generate one set of priors which can be shared across all images.
-  top_shape[0] = 1;
+  top_shape[0] = 1;//???
   // 2 channels. First channel stores the mean of each prior coordinate.
   // Second channel stores the variance of each prior coordinate.
-  top_shape[1] = 2;
+  top_shape[1] = 2;//???
   top_shape[2] = layer_width * layer_height * num_priors_ * 4;
   CHECK_GT(top_shape[2], 0);
   top[0]->Reshape(top_shape);
@@ -119,7 +129,7 @@ void PriorBoxLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
 template <typename Dtype>
 void PriorBoxLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     const vector<Blob<Dtype>*>& top) {
-  const int layer_width = bottom[0]->width();
+  const int layer_width = bottom[0]->width();//上一层feature map的宽
   const int layer_height = bottom[0]->height();
   int img_width, img_height;
   if (img_h_ == 0 || img_w_ == 0) {
@@ -137,18 +147,20 @@ void PriorBoxLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
     step_w = step_w_;
     step_h = step_h_;
   }
-  Dtype* top_data = top[0]->mutable_cpu_data();
+  Dtype* top_data = top[0]->mutable_cpu_data();//获取cpu中的数据
   int dim = layer_height * layer_width * num_priors_ * 4;
   int idx = 0;
-  for (int h = 0; h < layer_height; ++h) {
+  for (int h = 0; h < layer_height; ++h) {//feature map 中的每个位置点
     for (int w = 0; w < layer_width; ++w) {
-      float center_x = (w + offset_) * step_w;
+      float center_x = (w + offset_) * step_w;//为boundingbox中心，对应的图像中的尺寸（像素大小）
       float center_y = (h + offset_) * step_h;
-      float box_width, box_height;
+      float box_width, box_height;//为boundingbox宽高
+      //大小为min_sizes_ * min_sizes_的bbox
       for (int s = 0; s < min_sizes_.size(); ++s) {
         int min_size_ = min_sizes_[s];
         // first prior: aspect_ratio = 1, size = min_size
         box_width = box_height = min_size_;
+        //中心，宽高转换为xywh
         // xmin
         top_data[idx++] = (center_x - box_width / 2.) / img_width;
         // ymin
@@ -158,6 +170,7 @@ void PriorBoxLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
         // ymax
         top_data[idx++] = (center_y + box_height / 2.) / img_height;
 
+        //大小为sqrt(min_size_ * max_size_) * sqrt(min_size_ * max_size_)的bbox
         if (max_sizes_.size() > 0) {
           CHECK_EQ(min_sizes_.size(), max_sizes_.size());
           int max_size_ = max_sizes_[s];
@@ -173,6 +186,7 @@ void PriorBoxLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
           top_data[idx++] = (center_y + box_height / 2.) / img_height;
         }
 
+        //比例不是1：1的bbox
         // rest of priors
         for (int r = 0; r < aspect_ratios_.size(); ++r) {
           float ar = aspect_ratios_[r];
@@ -193,13 +207,16 @@ void PriorBoxLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
       }
     }
   }
+  //有些bbox会超出图像边界，clip
   // clip the prior's coordidate such that it is within [0, 1]
   if (clip_) {
     for (int d = 0; d < dim; ++d) {
       top_data[d] = std::min<Dtype>(std::max<Dtype>(top_data[d], 0.), 1.);
     }
   }
+
   // set the variance.
+  //?????
   top_data += top[0]->offset(0, 1);
   if (variance_.size() == 1) {
     caffe_set<Dtype>(dim, Dtype(variance_[0]), top_data);
